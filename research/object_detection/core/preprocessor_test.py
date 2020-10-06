@@ -3814,21 +3814,23 @@ class PreprocessorTest(test_case.TestCase, parameterized.TestCase):
 
       boxes = tf.constant([[0.25, .25, .75, .75]])
       labels = tf.constant([[1]])
+      label_confidences = tf.constant([0.75])
       label_weights = tf.constant([[1.]])
 
-      (new_image, new_boxes, _, _, new_masks,
+      (new_image, new_boxes, _, _, new_confidences, new_masks,
        new_keypoints) = preprocessor.random_square_crop_by_scale(
            image,
            boxes,
            labels,
            label_weights,
+           label_confidences,
            masks=masks,
            keypoints=keypoints,
            max_border=256,
            scale_min=scale,
            scale_max=scale)
-      return new_image, new_boxes, new_masks, new_keypoints
-    image, boxes, masks, keypoints = self.execute_cpu(graph_fn, [])
+      return new_image, new_boxes, new_confidences, new_masks, new_keypoints
+    image, boxes, confidences, masks, keypoints = self.execute_cpu(graph_fn, [])
     ymin, xmin, ymax, xmax = boxes[0]
     self.assertAlmostEqual(ymax - ymin, 0.5 / scale)
     self.assertAlmostEqual(xmax - xmin, 0.5 / scale)
@@ -3842,6 +3844,7 @@ class PreprocessorTest(test_case.TestCase, parameterized.TestCase):
     self.assertAlmostEqual(scale * 256.0, size)
 
     self.assertAllClose(image[:, :, 0], masks[0, :, :])
+    self.assertAllClose(confidences, [0.75])
 
   @parameterized.named_parameters(('scale_0_1', 0.1), ('scale_1_0', 1.0),
                                   ('scale_2_0', 2.0))
@@ -3927,6 +3930,32 @@ class PreprocessorTest(test_case.TestCase, parameterized.TestCase):
 
     self.assertAllClose(image[:, :, 0],
                         masks[0, :, :])
+
+  def test_random_scale_crop_and_pad_to_square_handles_confidences(self):
+
+    def graph_fn():
+      image = tf.zeros([10, 10, 1])
+      boxes = tf.constant([[0, 0, 0.5, 0.5], [0.5, 0.5, 0.75, 0.75]])
+      label_weights = tf.constant([1.0, 1.0])
+      box_labels = tf.constant([0, 1])
+      box_confidences = tf.constant([-1.0, 1.0])
+
+      (_, new_boxes, _, _,
+       new_confidences) = preprocessor.random_scale_crop_and_pad_to_square(
+           image,
+           boxes,
+           box_labels,
+           label_weights,
+           label_confidences=box_confidences,
+           scale_min=0.8,
+           scale_max=0.9,
+           output_size=10)
+      return new_boxes, new_confidences
+
+    boxes, confidences = self.execute_cpu(graph_fn, [])
+
+    self.assertLen(boxes, 2)
+    self.assertAllEqual(confidences, [-1.0, 1.0])
 
 
 if __name__ == '__main__':

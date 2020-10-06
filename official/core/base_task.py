@@ -19,14 +19,10 @@ import functools
 from typing import Any, Callable, Optional
 
 from absl import logging
-import six
 import tensorflow as tf
 
-from official.modeling.hyperparams import config_definitions as cfg
 
-
-@six.add_metaclass(abc.ABCMeta)
-class Task(tf.Module):
+class Task(tf.Module, metaclass=abc.ABCMeta):
   """A single-replica view of training procedure.
 
   Tasks provide artifacts for training/evalution procedures, including
@@ -37,11 +33,12 @@ class Task(tf.Module):
   # Special keys in train/validate step returned logs.
   loss = "loss"
 
-  def __init__(self, params: cfg.TaskConfig, logging_dir: str = None):
+  def __init__(self, params, logging_dir: str = None):
     """Task initialization.
 
     Args:
-      params: cfg.TaskConfig instance.
+      params: the task configuration instance, which can be any of
+        dataclass, ConfigDict, namedtuple, etc.
       logging_dir: a string pointing to where the model, summaries etc. will be
         saved. You can also write additional stuff in this directory.
     """
@@ -49,7 +46,7 @@ class Task(tf.Module):
     self._logging_dir = logging_dir
 
   @property
-  def task_config(self) -> cfg.TaskConfig:
+  def task_config(self):
     return self._task_config
 
   @property
@@ -57,7 +54,7 @@ class Task(tf.Module):
     return self._logging_dir
 
   def initialize(self, model: tf.keras.Model):
-    """A callback function used as CheckpointManager's init_fn.
+    """[Optional] A callback function used as CheckpointManager's init_fn.
 
     This function will be called when no checkpoint is found for the model.
     If there is a checkpoint, the checkpoint will be loaded and this function
@@ -75,15 +72,18 @@ class Task(tf.Module):
     if not ckpt_dir_or_file:
       return
 
-    ckpt = tf.train.Checkpoint(**model.checkpoint_items)
-    status = ckpt.restore(ckpt_dir_or_file)
+    if hasattr(model, "checkpoint_items"):
+      checkpoint_items = model.checkpoint_items
+    else:
+      checkpoint_items = dict(model=model)
+    ckpt = tf.train.Checkpoint(**checkpoint_items)
+    status = ckpt.read(ckpt_dir_or_file)
     status.expect_partial().assert_existing_objects_matched()
     logging.info("Finished loading pretrained checkpoint from %s",
                  ckpt_dir_or_file)
 
-  @abc.abstractmethod
   def build_model(self) -> tf.keras.Model:
-    """Creates model architecture.
+    """[Optional] Creates model architecture.
 
     Returns:
       A model instance.
@@ -126,7 +126,7 @@ class Task(tf.Module):
 
   @abc.abstractmethod
   def build_inputs(self,
-                   params: cfg.DataConfig,
+                   params,
                    input_context: Optional[tf.distribute.InputContext] = None):
     """Returns a dataset or a nested structure of dataset functions.
 
@@ -134,7 +134,8 @@ class Task(tf.Module):
     With distributed training, this method runs on remote hosts.
 
     Args:
-      params: hyperparams to create input pipelines.
+      params: hyperparams to create input pipelines, which can be any of
+        dataclass, ConfigDict, namedtuple, etc.
       input_context: optional distribution input pipeline context.
 
     Returns:
@@ -167,26 +168,30 @@ class Task(tf.Module):
     return []
 
   def process_metrics(self, metrics, labels, model_outputs):
-    """Process and update metrics. Called when using custom training loop API.
+    """Process and update metrics.
+
+    Called when using custom training loop API.
 
     Args:
-      metrics: a nested structure of metrics objects.
-        The return of function self.build_metrics.
+      metrics: a nested structure of metrics objects. The return of function
+        self.build_metrics.
       labels: a tensor or a nested structure of tensors.
-      model_outputs: a tensor or a nested structure of tensors.
-        For example, output of the keras model built by self.build_model.
+      model_outputs: a tensor or a nested structure of tensors. For example,
+        output of the keras model built by self.build_model.
     """
     for metric in metrics:
       metric.update_state(labels, model_outputs)
 
   def process_compiled_metrics(self, compiled_metrics, labels, model_outputs):
-    """Process and update compiled_metrics. call when using compile/fit API.
+    """Process and update compiled_metrics.
+
+    call when using compile/fit API.
 
     Args:
       compiled_metrics: the compiled metrics (model.compiled_metrics).
       labels: a tensor or a nested structure of tensors.
-      model_outputs: a tensor or a nested structure of tensors.
-        For example, output of the keras model built by self.build_model.
+      model_outputs: a tensor or a nested structure of tensors. For example,
+        output of the keras model built by self.build_model.
     """
     compiled_metrics.update_state(labels, model_outputs)
 
@@ -293,4 +298,3 @@ class Task(tf.Module):
   def reduce_aggregated_logs(self, aggregated_logs):
     """Optional reduce of aggregated logs over validation steps."""
     return {}
-

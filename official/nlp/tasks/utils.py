@@ -14,21 +14,80 @@
 # limitations under the License.
 # ==============================================================================
 """Common utils for tasks."""
+from typing import Any, Callable
+
+from absl import logging
+import orbit
 import tensorflow as tf
 import tensorflow_hub as hub
 
 
-def get_encoder_from_hub(hub_module: str) -> tf.keras.Model:
-  """Gets an encoder from hub."""
+def get_encoder_from_hub(hub_model) -> tf.keras.Model:
+  """Gets an encoder from hub.
+
+  Args:
+    hub_model: A tfhub model loaded by `hub.load(...)`.
+
+  Returns:
+    A tf.keras.Model.
+  """
   input_word_ids = tf.keras.layers.Input(
       shape=(None,), dtype=tf.int32, name='input_word_ids')
   input_mask = tf.keras.layers.Input(
       shape=(None,), dtype=tf.int32, name='input_mask')
   input_type_ids = tf.keras.layers.Input(
       shape=(None,), dtype=tf.int32, name='input_type_ids')
-  hub_layer = hub.KerasLayer(hub_module, trainable=True)
-  pooled_output, sequence_output = hub_layer(
-      [input_word_ids, input_mask, input_type_ids])
-  return tf.keras.Model(
-      inputs=[input_word_ids, input_mask, input_type_ids],
-      outputs=[sequence_output, pooled_output])
+  hub_layer = hub.KerasLayer(hub_model, trainable=True)
+  output_dict = {}
+  dict_input = dict(
+      input_word_ids=input_word_ids,
+      input_mask=input_mask,
+      input_type_ids=input_type_ids)
+
+  # The legacy hub model takes a list as input and returns a Tuple of
+  # `pooled_output` and `sequence_output`, while the new hub model takes dict
+  # as input and returns a dict.
+  # TODO(chendouble): Remove the support of legacy hub model when the new ones
+  # are released.
+  hub_output_signature = hub_model.signatures['serving_default'].outputs
+  if len(hub_output_signature) == 2:
+    logging.info('Use the legacy hub module with list as input/output.')
+    pooled_output, sequence_output = hub_layer(
+        [input_word_ids, input_mask, input_type_ids])
+    output_dict['pooled_output'] = pooled_output
+    output_dict['sequence_output'] = sequence_output
+  else:
+    logging.info('Use the new hub module with dict as input/output.')
+    output_dict = hub_layer(dict_input)
+
+  return tf.keras.Model(inputs=dict_input, outputs=output_dict)
+
+
+def predict(predict_step_fn: Callable[[Any], Any],
+            aggregate_fn: Callable[[Any, Any], Any], dataset: tf.data.Dataset):
+  """Runs prediction.
+
+  Args:
+    predict_step_fn: A callable such as `def predict_step(inputs)`, where
+      `inputs` are input tensors.
+    aggregate_fn: A callable such as `def aggregate_fn(state, value)`, where
+      `value` is the outputs from `predict_step_fn`.
+    dataset: A `tf.data.Dataset` object.
+
+  Returns:
+    The aggregated predictions.
+  """
+
+  @tf.function
+  def predict_step(iterator):
+    """Predicts on distributed devices."""
+    outputs = tf.distribute.get_strategy().run(
+        predict_step_fn, args=(next(iterator),))
+    return tf.nest.map_structure(
+        tf.distribute.get_strategy().experimental_local_results, outputs)
+
+  loop_fn = orbit.utils.create_loop_fn(predict_step)
+  # Set `num_steps` to -1 to exhaust the dataset.
+  outputs = loop_fn(
+      iter(dataset), num_steps=-1, state=None, reduce_fn=aggregate_fn)  # pytype: disable=wrong-arg-types
+  return outputs

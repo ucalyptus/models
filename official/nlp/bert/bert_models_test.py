@@ -48,10 +48,12 @@ class BertModelsTest(tf.test.TestCase):
         initializer=None,
         use_next_sentence_label=True)
     self.assertIsInstance(model, tf.keras.Model)
-    self.assertIsInstance(encoder, networks.TransformerEncoder)
+    self.assertIsInstance(encoder, networks.BertEncoder)
 
     # model has one scalar output: loss value.
-    self.assertEqual(model.output.shape.as_list(), [None,])
+    self.assertEqual(model.output.shape.as_list(), [
+        None,
+    ])
 
     # Expect two output from encoder: sequence and classification output.
     self.assertIsInstance(encoder.output, list)
